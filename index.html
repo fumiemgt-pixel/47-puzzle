@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>47都道府県パズルめぐり</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- タイトル画面 -->
+  <div id="screen-title" class="screen active">
+    <div class="title-bg">
+      <div class="cloud cloud1">☁️</div>
+      <div class="cloud cloud2">☁️</div>
+      <div class="cloud cloud3">☁️</div>
+    </div>
+    <div class="title-content">
+      <div class="title-icon-row">
+        <span class="floating-icon">🌸</span>
+        <span class="floating-icon delay1">⛩️</span>
+        <span class="floating-icon delay2">🗾</span>
+        <span class="floating-icon delay3">🍱</span>
+        <span class="floating-icon delay4">🎋</span>
+      </div>
+      <div class="title-logo">
+        <div class="title-sub">たびしよう！</div>
+        <h1 class="title-main">47都道府県<br>パズルめぐり</h1>
+        <div class="title-tagline">🗺️ 日本を旅するマッチ3パズル 🗺️</div>
+      </div>
+      <div class="title-buttons">
+        <button class="btn btn-primary btn-large" id="btn-start">
+          <span class="btn-icon">🎮</span> はじめる
+        </button>
+        <button class="btn btn-secondary btn-large" id="btn-continue">
+          <span class="btn-icon">📍</span> つづきから
+        </button>
+        <button class="btn btn-tertiary" id="btn-zukan">
+          <span class="btn-icon">📖</span> ご当地図鑑
+        </button>
+      </div>
+      <div class="title-deco">✨ 北海道から沖縄まで旅しよう！ ✨</div>
+    </div>
+  </div>
+
+  <!-- ステージ選択画面 -->
+  <div id="screen-stage" class="screen">
+    <div class="screen-header">
+      <button class="btn-back" id="btn-stage-back">◀ もどる</button>
+      <h2 class="screen-title">ステージせんたく</h2>
+      <div class="progress-badge" id="stage-progress">0 / 47 制覇</div>
+    </div>
+    <div class="stage-map-header">
+      <span class="map-icon">🗾</span>
+      <p>クリアして日本全国を制覇しよう！</p>
+    </div>
+    <div class="stage-list" id="stage-list">
+      <!-- dynamically generated -->
+    </div>
+  </div>
+
+  <!-- ゲーム画面 -->
+  <div id="screen-game" class="screen">
+    <div class="game-header">
+      <button class="btn-back" id="btn-game-back">◀</button>
+      <div class="game-header-info">
+        <div class="prefecture-name" id="game-prefecture-name">北海道</div>
+        <div class="score-row">
+          <div class="score-box">
+            <span class="score-label">スコア</span>
+            <span class="score-value" id="game-score">0</span>
+          </div>
+          <div class="score-box target">
+            <span class="score-label">目標</span>
+            <span class="score-value" id="game-target">2000</span>
+          </div>
+        </div>
+      </div>
+      <div class="combo-display" id="combo-display"></div>
+    </div>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progress-bar-fill"></div>
+      </div>
+    </div>
+    <div class="board-wrap">
+      <div class="game-board" id="game-board"></div>
+    </div>
+    <div class="game-footer">
+      <button class="btn btn-warning" id="btn-restart">🔄 リスタート</button>
+      <button class="btn btn-secondary" id="btn-to-stage">📋 ステージ一覧</button>
+    </div>
+  </div>
+
+  <!-- クリア結果画面 -->
+  <div id="screen-clear" class="screen">
+    <div class="clear-bg">
+      <div class="confetti-container" id="confetti-container"></div>
+    </div>
+    <div class="clear-content">
+      <div class="clear-header">
+        <div class="clear-badge">✨ CLEAR! ✨</div>
+        <h2 class="clear-title" id="clear-title">北海道クリア！</h2>
+      </div>
+      <div class="clear-icons" id="clear-icons"></div>
+      <div class="clear-stats">
+        <div class="stat-card">
+          <div class="stat-icon">⭐</div>
+          <div class="stat-label">スコア</div>
+          <div class="stat-value" id="clear-score">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🔥</div>
+          <div class="stat-label">最大コンボ</div>
+          <div class="stat-value" id="clear-combo">0</div>
+        </div>
+      </div>
+      <div class="clear-trivia" id="clear-trivia">
+        <div class="trivia-icon">💬</div>
+        <p id="trivia-text"></p>
+      </div>
+      <div class="clear-buttons">
+        <button class="btn btn-primary btn-large" id="btn-next-stage">
+          <span class="btn-icon">➡️</span> 次の都道府県へ
+        </button>
+        <button class="btn btn-secondary" id="btn-clear-to-stage">
+          📋 ステージ選択へ
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ご当地図鑑画面 -->
+  <div id="screen-zukan" class="screen">
+    <div class="screen-header">
+      <button class="btn-back" id="btn-zukan-back">◀ もどる</button>
+      <h2 class="screen-title">ご当地図鑑</h2>
+      <div class="progress-badge" id="zukan-progress">0 / 47</div>
+    </div>
+    <div class="zukan-intro">
+      <span class="zukan-intro-icon">📖</span>
+      <p>クリアした都道府県が図鑑に登録されます！</p>
+    </div>
+    <div class="zukan-list" id="zukan-list">
+      <!-- dynamically generated -->
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
