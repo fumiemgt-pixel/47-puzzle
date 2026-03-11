@@ -1,320 +1,216 @@
-/* ===================================================
-   47都道府県パズルめぐり - script.js
-   =================================================== */
+/* =====================================================
+   北海道パズル — script.js
+   仕様:
+   ① プレイヤーの操作でマッチした場合のみ消去
+   ② 初期盤面はマッチ発生しない配置で生成
+   ③ 自動コンボ禁止（落下後に揃っても消さない）
+   ④ 1手につき消去は1回だけ
+   ⑤ マッチしない移動は元の位置に戻す
+   ⑥ 重力あり（消えたら上から落下・補充）
+   ===================================================== */
 
-// ===== GAME DATA =====
-const STAGES = [
-  {
-    id: 'hokkaido',
-    name: '北海道',
-    number: 1,
-    region: '北海道地方',
-    targetScore: 2000,
-    icons: ['🦀', '🐄', '🌽', '🧀', '🦊', '❄️'],
-    iconNames: ['カニ', '牛', 'トウモロコシ', 'チーズ', 'キツネ', '雪'],
-    description: '日本最大の都道府県で、広大な大地と豊かな自然が広がります。',
-    trivia: '北海道は日本最大の都道府県！\n広すぎて「ほっかいどうしよう」って迷うかも！？'
-  },
-  {
-    id: 'aomori',
-    name: '青森',
-    number: 2,
-    region: '東北地方',
-    targetScore: 2500,
-    icons: ['🍎', '🐟', '🕯️', '⛄', '🍶', '🌊'],
-    iconNames: ['りんご', 'マグロ', 'ねぶた', '雪だるま', '日本酒', '海'],
-    description: 'りんごの生産量日本一！ねぶた祭りが有名な東北の玄関口。',
-    trivia: '青森はりんごの名産地！\nりんごが好きすぎて「あおもり食べちゃう」かも！？'
-  },
-  {
-    id: 'miyagi',
-    name: '宮城',
-    number: 3,
-    region: '東北地方',
-    targetScore: 3000,
-    icons: ['🦪', '🐄', '🍚', '🏯', '🌸', '🐻'],
-    iconNames: ['カキ', '牛タン', '笹かまぼこ', '仙台城', '花', '熊'],
-    description: '仙台牛タンやカキが有名な宮城県。伊達政宗公ゆかりの地。',
-    trivia: '宮城は牛タンの聖地！\nおいしすぎて「もう宮城（みやぎ）ない！」ってなるよ！？'
-  },
-  {
-    id: 'tokyo',
-    name: '東京',
-    number: 4,
-    region: '関東地方',
-    targetScore: 3500,
-    icons: ['🗼', '🚇', '🍣', '🏙️', '🌸', '🎌'],
-    iconNames: ['東京タワー', '電車', 'すし', '都市', '花', '日本の旗'],
-    description: '日本の首都！世界有数の都市で、グルメもエンタメも最高。',
-    trivia: '東京はなんでもある街！\nお店が多すぎて「東（とう）に行くか西に行くか」迷っちゃう！？'
-  },
-  {
-    id: 'osaka',
-    name: '大阪',
-    number: 5,
-    region: '近畿地方',
-    targetScore: 4000,
-    icons: ['🦑', '🍜', '🏯', '😄', '🎪', '🍡'],
-    iconNames: ['たこやき', 'うどん', '大阪城', '笑い', 'お笑い', '団子'],
-    description: '食いだおれの街、大阪。たこやきやお好み焼きが絶品！',
-    trivia: '大阪は食いだおれの街！\nおいしすぎて「おおさか」ず食べちゃう！？'
-  }
-  // 後から47都道府県すべてここに追加できます
-];
+/* ── 定数 ── */
+const COLS        = 6;
+const ROWS        = 6;
+const TARGET      = 2000;
+const SCORE_TABLE = { 3: 100, 4: 200, 5: 500 };   // マッチ数→スコア
+const PIECES      = ['❄️','🦀','🐄','🧀','🌽','🦊'];
 
-// ===== GAME CONFIG =====
-const COLS = 6;
-const ROWS = 8;
-const MATCH_MIN = 3;
+/*
+  後で画像に差し替える際はここを変えるだけ:
+  const PIECES = [
+    'images/hokkaido/01.png',
+    'images/hokkaido/02.png',
+    ...
+  ];
+  renderTile() の中でも img/emoji を切り替えられるようにしてあります。
+*/
 
-// ===== STATE =====
-let state = {
-  currentStageIndex: 0,
-  board: [],          // [row][col] = iconIndex (0-5)
-  score: 0,
-  maxCombo: 0,
-  currentCombo: 0,
-  selected: null,     // {row, col}
-  isAnimating: false,
-  dragStart: null,
-  savedProgress: {}
-};
+/* ── 状態 ── */
+let board    = [];     // board[row][col] = 0-5 のタイプ番号
+let score    = 0;
+let busy     = false;  // アニメーション中フラグ
+let selected = null;   // {row, col} または null
 
-// ===== LOCAL STORAGE =====
-function loadProgress() {
-  try {
-    const raw = localStorage.getItem('puzzle47_progress');
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
+/* ── DOM参照 ── */
+const boardEl    = document.getElementById('board');
+const scoreEl    = document.getElementById('score-display');
+const targetEl   = document.getElementById('target-display');
+const progFill   = document.getElementById('prog-fill');
+const progPct    = document.getElementById('prog-pct');
+const flashEl    = document.getElementById('flash');
+const overlay    = document.getElementById('overlay');
+const modalScore = document.getElementById('modal-score');
 
-function saveProgress(progress) {
-  try {
-    localStorage.setItem('puzzle47_progress', JSON.stringify(progress));
-  } catch {}
-}
+targetEl.textContent = TARGET.toLocaleString();
 
-function isStageCleared(stageId) {
-  return !!state.savedProgress[stageId];
-}
-
-function isStageAvailable(index) {
-  if (index === 0) return true;
-  const prevStage = STAGES[index - 1];
-  return isStageCleared(prevStage.id);
-}
-
-function clearStage(stageId, score, combo) {
-  state.savedProgress[stageId] = { score, combo, clearedAt: Date.now() };
-  saveProgress(state.savedProgress);
-}
-
-function getClearedCount() {
-  return Object.keys(state.savedProgress).length;
-}
-
-// ===== INIT =====
+/* =====================================================
+   初期化
+   ===================================================== */
 function init() {
-  state.savedProgress = loadProgress();
-  setupEventListeners();
-  showScreen('title');
+  score    = 0;
+  selected = null;
+  busy     = false;
+  board    = generateBoard();
+  renderAll();
+  updateHUD();
+  hideOverlay();
+  showFlash('');
 }
 
-// ===== SCREEN MANAGEMENT =====
-function showScreen(name) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  const screen = document.getElementById(`screen-${name}`);
-  if (screen) screen.classList.add('active');
+/* ── ボード生成：初期マッチなし ── */
+function generateBoard() {
+  const b = Array.from({length: ROWS}, () => new Array(COLS).fill(0));
 
-  if (name === 'stage') renderStageSelect();
-  if (name === 'zukan') renderZukan();
-}
-
-// ===== TITLE SCREEN =====
-function setupTitleButtons() {
-  document.getElementById('btn-start').addEventListener('click', () => {
-    state.currentStageIndex = 0;
-    showScreen('stage');
-  });
-  document.getElementById('btn-continue').addEventListener('click', () => {
-    showScreen('stage');
-  });
-  document.getElementById('btn-zukan').addEventListener('click', () => {
-    showScreen('zukan');
-  });
-}
-
-// ===== STAGE SELECTION =====
-function renderStageSelect() {
-  const clearedCount = getClearedCount();
-  document.getElementById('stage-progress').textContent = `${clearedCount} / 47 制覇`;
-
-  const list = document.getElementById('stage-list');
-  list.innerHTML = '';
-
-  STAGES.forEach((stage, index) => {
-    const cleared = isStageCleared(stage.id);
-    const available = isStageAvailable(index);
-    const card = document.createElement('div');
-    card.className = `stage-card ${cleared ? 'cleared' : available ? 'available' : 'locked'}`;
-
-    const statusIcon = cleared ? '✅' : available ? '⭐' : '🔒';
-
-    card.innerHTML = `
-      <div class="stage-number">${stage.number}</div>
-      <div class="stage-info">
-        <div class="stage-name">${stage.name}</div>
-        <div class="stage-region">${stage.region}</div>
-        <div class="stage-score-goal">目標スコア: ${stage.targetScore.toLocaleString()}</div>
-      </div>
-      <div class="stage-status">${statusIcon}</div>
-    `;
-
-    if (!cleared && !available) {
-      // locked
-    } else {
-      card.addEventListener('click', () => startGame(index));
-    }
-
-    list.appendChild(card);
-  });
-}
-
-// ===== GAME LOGIC =====
-function startGame(stageIndex) {
-  state.currentStageIndex = stageIndex;
-  state.score = 0;
-  state.maxCombo = 0;
-  state.currentCombo = 0;
-  state.selected = null;
-  state.isAnimating = false;
-
-  const stage = STAGES[stageIndex];
-  document.getElementById('game-prefecture-name').textContent = stage.name;
-  document.getElementById('game-target').textContent = stage.targetScore.toLocaleString();
-  updateScoreDisplay();
-
-  state.board = createBoard(stage.icons.length);
-  renderBoard();
-  showScreen('game');
-}
-
-function createBoard(iconCount) {
-  const board = [];
   for (let r = 0; r < ROWS; r++) {
-    board[r] = [];
     for (let c = 0; c < COLS; c++) {
-      board[r][c] = randomIcon(iconCount);
+      // 使えるタイプ一覧から、すでに左2つ・上2つと同じになるタイプを除外
+      const forbidden = new Set();
+      if (c >= 2 && b[r][c-1] === b[r][c-2]) forbidden.add(b[r][c-1]);
+      if (r >= 2 && b[r-1][c] === b[r-2][c]) forbidden.add(b[r-1][c]);
+      const pool = PIECES.map((_,i) => i).filter(i => !forbidden.has(i));
+      b[r][c] = pool[Math.floor(Math.random() * pool.length)];
     }
   }
-  // Remove initial matches
-  removeInitialMatches(board, iconCount);
-  return board;
+  return b;
 }
 
-function randomIcon(iconCount) {
-  return Math.floor(Math.random() * iconCount);
-}
-
-function removeInitialMatches(board, iconCount) {
-  let changed = true;
-  let safety = 0;
-  while (changed && safety < 100) {
-    changed = false;
-    safety++;
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        if (isPartOfMatch(board, r, c)) {
-          board[r][c] = randomIcon(iconCount);
-          changed = true;
-        }
-      }
-    }
-  }
-}
-
-function isPartOfMatch(board, r, c) {
-  const v = board[r][c];
-  // Horizontal
-  if (c >= 2 && board[r][c-1] === v && board[r][c-2] === v) return true;
-  if (c >= 1 && c < COLS-1 && board[r][c-1] === v && board[r][c+1] === v) return true;
-  if (c < COLS-2 && board[r][c+1] === v && board[r][c+2] === v) return true;
-  // Vertical
-  if (r >= 2 && board[r-1][c] === v && board[r-2][c] === v) return true;
-  if (r >= 1 && r < ROWS-1 && board[r-1][c] === v && board[r+1][c] === v) return true;
-  if (r < ROWS-2 && board[r+1][c] === v && board[r+2][c] === v) return true;
-  return false;
-}
-
-// ===== BOARD RENDERING =====
-function renderBoard() {
-  const stage = STAGES[state.currentStageIndex];
-  const boardEl = document.getElementById('game-board');
+/* =====================================================
+   描画
+   ===================================================== */
+function renderAll() {
   boardEl.innerHTML = '';
-  boardEl.style.gridTemplateRows = `repeat(${ROWS}, 1fr)`;
-
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const cell = createCellElement(r, c);
-      boardEl.appendChild(cell);
+      boardEl.appendChild(createTileEl(r, c));
     }
   }
-  updateScoreDisplay();
 }
 
-function createCellElement(r, c) {
-  const stage = STAGES[state.currentStageIndex];
-  const cell = document.createElement('div');
-  cell.className = 'cell';
-  cell.dataset.row = r;
-  cell.dataset.col = c;
-  cell.textContent = stage.icons[state.board[r][c]];
-
-  cell.addEventListener('click', () => onCellClick(r, c));
-  cell.addEventListener('mousedown', (e) => onDragStart(e, r, c));
-  cell.addEventListener('touchstart', (e) => onTouchStart(e, r, c), { passive: true });
-
-  return cell;
+function createTileEl(r, c) {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.dataset.row  = r;
+  el.dataset.col  = c;
+  el.dataset.type = board[r][c];
+  setTileContent(el, board[r][c]);
+  attachTileEvents(el, r, c);
+  return el;
 }
 
-function getCellElement(r, c) {
-  return document.querySelector(`[data-row="${r}"][data-col="${c}"]`);
+function setTileContent(el, type) {
+  /*
+    画像差し替えポイント:
+    if (PIECES[type].endsWith('.png')) {
+      el.innerHTML = `<img src="${PIECES[type]}" alt="piece${type}" style="width:75%;height:75%;object-fit:contain;">`;
+    } else {
+      el.textContent = PIECES[type];
+    }
+  */
+  el.textContent = PIECES[type];
+  el.dataset.type = type;
 }
 
-function updateCellDisplay(r, c) {
-  const stage = STAGES[state.currentStageIndex];
-  const cell = getCellElement(r, c);
-  if (cell) {
-    cell.textContent = stage.icons[state.board[r][c]];
-    cell.className = 'cell';
-  }
+function getTileEl(r, c) {
+  return boardEl.querySelector(`.tile[data-row="${r}"][data-col="${c}"]`);
 }
 
-// ===== INTERACTION =====
-function onCellClick(r, c) {
-  if (state.isAnimating) return;
+function refreshTileEl(r, c) {
+  const el = getTileEl(r, c);
+  if (!el) return;
+  setTileContent(el, board[r][c]);
+}
 
-  if (!state.selected) {
-    state.selected = { row: r, col: c };
-    const cell = getCellElement(r, c);
-    if (cell) cell.classList.add('selected');
-  } else {
-    const { row: sr, col: sc } = state.selected;
-    const prevCell = getCellElement(sr, sc);
-    if (prevCell) prevCell.classList.remove('selected');
+/* =====================================================
+   HUD更新
+   ===================================================== */
+function updateHUD() {
+  scoreEl.textContent = score.toLocaleString();
+  const pct = Math.min(100, Math.round(score / TARGET * 100));
+  progFill.style.width = pct + '%';
+  progPct.textContent  = `${score.toLocaleString()} / ${TARGET.toLocaleString()}`;
+}
 
-    if (sr === r && sc === c) {
-      state.selected = null;
+/* =====================================================
+   タッチ / クリック操作
+   ===================================================== */
+/* スワイプ検出用 */
+let touchOrigin = null; // {r, c, x, y}
+
+function attachTileEvents(el, r, c) {
+  /* PC: クリックで選択→隣接選択でスワップ */
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch') return;
+    onSelect(r, c);
+  });
+
+  /* スマホ: タッチスワイプ */
+  el.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.touches[0];
+    touchOrigin = {r, c, x: t.clientX, y: t.clientY};
+  }, {passive: false});
+
+  el.addEventListener('touchend', e => {
+    if (!touchOrigin) return;
+    e.preventDefault();
+    const t   = e.changedTouches[0];
+    const dx  = t.clientX - touchOrigin.x;
+    const dy  = t.clientY - touchOrigin.y;
+    const {r: or, c: oc} = touchOrigin;
+    touchOrigin = null;
+
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
+      /* ほぼ静止 → クリック扱い */
+      onSelect(or, oc);
       return;
     }
-
-    if (isAdjacent(sr, sc, r, c)) {
-      trySwap(sr, sc, r, c);
+    /* スワイプ方向を決定 */
+    let nr = or, nc = oc;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      nc = oc + (dx > 0 ? 1 : -1);
     } else {
-      state.selected = { row: r, col: c };
-      const cell = getCellElement(r, c);
-      if (cell) cell.classList.add('selected');
+      nr = or + (dy > 0 ? 1 : -1);
     }
+    if (!inBounds(nr, nc)) return;
+    clearSelected();
+    doSwap(or, oc, nr, nc);
+  }, {passive: false});
+}
+
+function onSelect(r, c) {
+  if (busy) return;
+
+  if (!selected) {
+    selected = {row: r, col: c};
+    getTileEl(r, c)?.classList.add('selected');
+    return;
+  }
+
+  const {row: sr, col: sc} = selected;
+
+  /* 同じタイルを再タップ → 選択解除 */
+  if (sr === r && sc === c) {
+    clearSelected();
+    return;
+  }
+
+  /* 隣接していれば入れ替え試行 */
+  if (isAdjacent(sr, sc, r, c)) {
+    clearSelected();
+    doSwap(sr, sc, r, c);
+  } else {
+    /* 選択先を変更 */
+    clearSelected();
+    selected = {row: r, col: c};
+    getTileEl(r, c)?.classList.add('selected');
+  }
+}
+
+function clearSelected() {
+  if (selected) {
+    getTileEl(selected.row, selected.col)?.classList.remove('selected');
+    selected = null;
   }
 }
 
@@ -322,416 +218,289 @@ function isAdjacent(r1, c1, r2, c2) {
   return (Math.abs(r1 - r2) + Math.abs(c1 - c2)) === 1;
 }
 
-// ===== DRAG / SWIPE =====
-function onDragStart(e, r, c) {
-  if (e.button !== 0) return;
-  state.dragStart = { row: r, col: c, x: e.clientX, y: e.clientY };
-  document.addEventListener('mousemove', onDragMove);
-  document.addEventListener('mouseup', onDragEnd);
+function inBounds(r, c) {
+  return r >= 0 && r < ROWS && c >= 0 && c < COLS;
 }
 
-function onDragMove(e) {}
+/* =====================================================
+   スワップ処理（仕様①④⑤）
+   ===================================================== */
+async function doSwap(r1, c1, r2, c2) {
+  if (busy) return;
+  busy = true;
+  showFlash('');
 
-function onDragEnd(e) {
-  document.removeEventListener('mousemove', onDragMove);
-  document.removeEventListener('mouseup', onDragEnd);
-  if (!state.dragStart) return;
-  const { row: r, col: c, x, y } = state.dragStart;
-  const dx = e.clientX - x;
-  const dy = e.clientY - y;
-  state.dragStart = null;
-  if (Math.abs(dx) < 15 && Math.abs(dy) < 15) return;
-  const [nr, nc] = getSwipeTarget(r, c, dx, dy);
-  if (nr !== r || nc !== c) trySwap(r, c, nr, nc);
-}
+  /* 1) ボードデータを入れ替え */
+  swapBoard(r1, c1, r2, c2);
 
-function onTouchStart(e, r, c) {
-  if (state.isAnimating) return;
-  const touch = e.touches[0];
-  state.dragStart = { row: r, col: c, x: touch.clientX, y: touch.clientY };
-  document.addEventListener('touchmove', onTouchMove, { passive: true });
-  document.addEventListener('touchend', onTouchEnd);
-}
+  /* 2) マッチ判定（プレイヤー操作後の1回のみ） */
+  const matched = findAllMatches();
 
-function onTouchMove(e) {}
-
-function onTouchEnd(e) {
-  document.removeEventListener('touchmove', onTouchMove);
-  document.removeEventListener('touchend', onTouchEnd);
-  if (!state.dragStart) return;
-  const touch = e.changedTouches[0];
-  const { row: r, col: c, x, y } = state.dragStart;
-  const dx = touch.clientX - x;
-  const dy = touch.clientY - y;
-  state.dragStart = null;
-  if (Math.abs(dx) < 15 && Math.abs(dy) < 15) {
-    onCellClick(r, c);
-    return;
-  }
-  const [nr, nc] = getSwipeTarget(r, c, dx, dy);
-  if (nr !== r || nc !== c) trySwap(r, c, nr, nc);
-}
-
-function getSwipeTarget(r, c, dx, dy) {
-  if (Math.abs(dx) > Math.abs(dy)) {
-    const nc = dx > 0 ? c + 1 : c - 1;
-    return [r, Math.max(0, Math.min(COLS - 1, nc))];
-  } else {
-    const nr = dy > 0 ? r + 1 : r - 1;
-    return [Math.max(0, Math.min(ROWS - 1, nr)), c];
-  }
-}
-
-// ===== SWAP & MATCH =====
-function trySwap(r1, c1, r2, c2) {
-  if (state.isAnimating) return;
-  state.selected = null;
-
-  // Do swap
-  const tmp = state.board[r1][c1];
-  state.board[r1][c1] = state.board[r2][c2];
-  state.board[r2][c2] = tmp;
-
-  const matches = findMatches();
-  if (matches.size === 0) {
-    // Swap back
-    const tmp2 = state.board[r1][c1];
-    state.board[r1][c1] = state.board[r2][c2];
-    state.board[r2][c2] = tmp2;
-    // Shake animation
-    [getCellElement(r1, c1), getCellElement(r2, c2)].forEach(el => {
-      if (el) {
-        el.style.animation = 'none';
-        el.offsetHeight;
-        el.style.animation = 'shake 0.3s ease';
-      }
-    });
+  if (matched.size === 0) {
+    /* マッチなし → 元に戻す（仕様⑤） */
+    swapBoard(r1, c1, r2, c2);
+    /* DOM更新 */
+    refreshTileEl(r1, c1);
+    refreshTileEl(r2, c2);
+    /* 視覚フィードバック */
+    animateBounceBack(r1, c1);
+    animateBounceBack(r2, c2);
+    showFlash('そこには並ばないよ…');
+    busy = false;
     return;
   }
 
-  updateCellDisplay(r1, c1);
-  updateCellDisplay(r2, c2);
-  state.currentCombo = 0;
-  state.isAnimating = true;
-  processMatches();
+  /* 3) DOM入れ替え反映 */
+  refreshTileEl(r1, c1);
+  refreshTileEl(r2, c2);
+
+  /* 4) マッチ消去→落下→補充（1回のみ：仕様③④） */
+  await resolveOnce(matched);
+
+  busy = false;
+  checkWin();
 }
 
-// ===== MATCH FINDING =====
-function findMatches() {
-  const matched = new Set();
+function swapBoard(r1, c1, r2, c2) {
+  const tmp = board[r1][c1];
+  board[r1][c1] = board[r2][c2];
+  board[r2][c2] = tmp;
+}
 
-  // Horizontal
+/* =====================================================
+   マッチ判定
+   ===================================================== */
+function findAllMatches() {
+  const cells = new Set();
+
+  /* 横 */
   for (let r = 0; r < ROWS; r++) {
     let run = 1;
     for (let c = 1; c <= COLS; c++) {
-      if (c < COLS && state.board[r][c] === state.board[r][c - 1]) {
+      if (c < COLS && board[r][c] === board[r][c-1]) {
         run++;
       } else {
-        if (run >= MATCH_MIN) {
-          for (let k = c - run; k < c; k++) matched.add(`${r},${k}`);
+        if (run >= 3) {
+          for (let k = c - run; k < c; k++) cells.add(`${r},${k}`);
         }
         run = 1;
       }
     }
   }
 
-  // Vertical
+  /* 縦 */
   for (let c = 0; c < COLS; c++) {
     let run = 1;
     for (let r = 1; r <= ROWS; r++) {
-      if (r < ROWS && state.board[r][c] === state.board[r - 1][c]) {
+      if (r < ROWS && board[r][c] === board[r-1][c]) {
         run++;
       } else {
-        if (run >= MATCH_MIN) {
-          for (let k = r - run; k < r; k++) matched.add(`${k},${c}`);
+        if (run >= 3) {
+          for (let k = r - run; k < r; k++) cells.add(`${k},${c}`);
         }
         run = 1;
       }
     }
   }
 
-  return matched;
+  return cells;   // Set<"r,c">
 }
 
-// ===== PROCESS MATCHES =====
-async function processMatches() {
-  const matched = findMatches();
-  if (matched.size === 0) {
-    state.isAnimating = false;
-    state.currentCombo = 0;
-    hideCombo();
-    checkWin();
-    return;
+/* マッチしたセルのうち最大の連続数を列・行ごとに返す（スコア計算用） */
+function calcMatchScore(matched) {
+  /* 各マッチグループの長さを調べる（横・縦それぞれ） */
+  const runLengths = [];
+
+  /* 横 */
+  for (let r = 0; r < ROWS; r++) {
+    let run = 0;
+    for (let c = 0; c < COLS; c++) {
+      if (matched.has(`${r},${c}`)) {
+        run++;
+      } else {
+        if (run >= 3) runLengths.push(run);
+        run = 0;
+      }
+    }
+    if (run >= 3) runLengths.push(run);
   }
 
-  state.currentCombo++;
-  if (state.currentCombo > state.maxCombo) state.maxCombo = state.currentCombo;
+  /* 縦 */
+  for (let c = 0; c < COLS; c++) {
+    let run = 0;
+    for (let r = 0; r < ROWS; r++) {
+      if (matched.has(`${r},${c}`)) {
+        run++;
+      } else {
+        if (run >= 3) runLengths.push(run);
+        run = 0;
+      }
+    }
+    if (run >= 3) runLengths.push(run);
+  }
 
-  // Score
-  const baseScore = matched.size * 50;
-  const comboBonus = state.currentCombo > 1 ? state.currentCombo * 30 : 0;
-  const gained = baseScore + comboBonus;
-  state.score += gained;
-  updateScoreDisplay();
-  showScorePopup(gained, state.currentCombo);
-  if (state.currentCombo > 1) showCombo(state.currentCombo);
+  /* スコア合算（T字・L字は重複カウントを避けるため matched.size を基準にしない） */
+  return runLengths.reduce((sum, len) => {
+    const key = Math.min(len, 5);
+    return sum + (SCORE_TABLE[key] || SCORE_TABLE[5]);
+  }, 0);
+}
 
-  // Animate matched cells
+/* =====================================================
+   消去 → 落下 → 補充（1サイクルのみ：仕様③④）
+   ===================================================== */
+async function resolveOnce(matched) {
+  /* ── スコア加算 ── */
+  const gained = calcMatchScore(matched);
+  score += gained;
+  updateHUD();
+  spawnScorePop(gained, matched);
+  if (gained >= 500) showFlash('🔥 ビッグマッチ！ +' + gained);
+  else if (gained >= 200) showFlash('✨ ナイス！ +' + gained);
+  else showFlash('+' + gained);
+
+  /* ── 消去アニメーション ── */
   matched.forEach(key => {
     const [r, c] = key.split(',').map(Number);
-    const cell = getCellElement(r, c);
-    if (cell) cell.classList.add('matched');
+    getTileEl(r, c)?.classList.add('exploding');
   });
+  await wait(340);
 
-  await wait(380);
-
-  // Remove matched
+  /* ── ボードデータから消去（-1でマーク） ── */
   matched.forEach(key => {
     const [r, c] = key.split(',').map(Number);
-    state.board[r][c] = -1;
+    board[r][c] = -1;
   });
-  renderBoard();
 
-  await wait(80);
-
-  // Drop pieces
-  dropPieces();
-  renderBoard();
-  // Animate fall
-  const stage = STAGES[state.currentStageIndex];
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      const cell = getCellElement(r, c);
-      if (cell) cell.classList.add('falling');
+  /* ── 重力：各列を下詰めにする（仕様⑥） ── */
+  for (let c = 0; c < COLS; c++) {
+    /* 下から上に向かって非空セルを詰める */
+    const stack = [];
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (board[r][c] !== -1) stack.push(board[r][c]);
+    }
+    for (let r = ROWS - 1; r >= 0; r--) {
+      board[r][c] = stack.shift() !== undefined ? stack[0] : -1;
+    }
+    /* 上から改めて正しく詰める */
+    const filled = [];
+    for (let r = 0; r < ROWS; r++) {
+      if (board[r][c] !== -1) filled.push(board[r][c]);
+    }
+    const emptyCount = ROWS - filled.length;
+    for (let r = 0; r < ROWS; r++) {
+      board[r][c] = r < emptyCount ? -1 : filled[r - emptyCount];
     }
   }
 
-  await wait(280);
-
-  // Fill empty
-  fillEmpty(stage.icons.length);
-  renderBoard();
+  /* ── 新しいピースを補充 ── */
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      const cell = getCellElement(r, c);
-      if (cell && state.board[r][c] !== undefined) cell.classList.add('new-piece');
+      if (board[r][c] === -1) {
+        board[r][c] = Math.floor(Math.random() * PIECES.length);
+      }
+    }
+  }
+
+  /* ── DOM全再描画（落下・補充アニメ付き） ── */
+  boardEl.innerHTML = '';
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const el = createTileEl(r, c);
+      if (matched.has(`${r},${c}`)) {
+        /* もともと空欄だった場所 = 補充ピース */
+        el.classList.add('spawning');
+      } else {
+        el.classList.add('dropping');
+      }
+      boardEl.appendChild(el);
     }
   }
 
   await wait(320);
 
-  // Check chain
-  processMatches();
-}
-
-function dropPieces() {
-  for (let c = 0; c < COLS; c++) {
-    const col = [];
-    for (let r = ROWS - 1; r >= 0; r--) {
-      if (state.board[r][c] !== -1) col.push(state.board[r][c]);
-    }
-    for (let r = ROWS - 1; r >= 0; r--) {
-      state.board[r][c] = col.shift() !== undefined ? col[col.length - (ROWS - r)] : -1;
-    }
-    // Rebuild properly
-    const valids = [];
-    for (let r = 0; r < ROWS; r++) {
-      if (state.board[r][c] !== -1) valids.push(state.board[r][c]);
-    }
-    let vi = 0;
-    let empty = ROWS - valids.length;
-    for (let r = 0; r < ROWS; r++) {
-      if (r < empty) state.board[r][c] = -1;
-      else state.board[r][c] = valids[vi++];
-    }
-  }
-}
-
-function fillEmpty(iconCount) {
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (state.board[r][c] === -1) {
-        state.board[r][c] = randomIcon(iconCount);
-      }
-    }
-  }
-}
-
-// ===== UI UPDATES =====
-function updateScoreDisplay() {
-  const stage = STAGES[state.currentStageIndex];
-  document.getElementById('game-score').textContent = state.score.toLocaleString();
-  const pct = Math.min(100, (state.score / stage.targetScore) * 100);
-  document.getElementById('progress-bar-fill').style.width = pct + '%';
-}
-
-function showCombo(combo) {
-  const el = document.getElementById('combo-display');
-  el.textContent = `${combo} COMBO! 🔥`;
-  el.style.display = 'block';
-  el.style.animation = 'none';
-  el.offsetHeight;
-  el.style.animation = 'comboPop 0.4s ease-out';
-}
-
-function hideCombo() {
-  const el = document.getElementById('combo-display');
-  el.style.display = 'none';
-}
-
-function showScorePopup(score, combo) {
-  const board = document.getElementById('game-board');
-  const popup = document.createElement('div');
-  popup.className = 'score-popup';
-  popup.textContent = combo > 1 ? `+${score} 🔥×${combo}` : `+${score}`;
-  popup.style.left = `${20 + Math.random() * 60}%`;
-  popup.style.top = `${30 + Math.random() * 40}%`;
-  board.appendChild(popup);
-  setTimeout(() => popup.remove(), 900);
-}
-
-// ===== WIN CHECK =====
-function checkWin() {
-  const stage = STAGES[state.currentStageIndex];
-  if (state.score >= stage.targetScore) {
-    clearStage(stage.id, state.score, state.maxCombo);
-    setTimeout(() => showClearScreen(), 200);
-  }
-}
-
-// ===== CLEAR SCREEN =====
-function showClearScreen() {
-  const stage = STAGES[state.currentStageIndex];
-  document.getElementById('clear-title').textContent = `${stage.name}クリア！`;
-  document.getElementById('clear-score').textContent = state.score.toLocaleString();
-  document.getElementById('clear-combo').textContent = state.maxCombo;
-  document.getElementById('trivia-text').textContent = stage.trivia;
-
-  // Icons
-  const iconsEl = document.getElementById('clear-icons');
-  iconsEl.innerHTML = '';
-  stage.icons.forEach(icon => {
-    const item = document.createElement('div');
-    item.className = 'clear-icon-item';
-    item.textContent = icon;
-    iconsEl.appendChild(item);
-  });
-
-  // Next button
-  const nextBtn = document.getElementById('btn-next-stage');
-  const nextIndex = state.currentStageIndex + 1;
-  if (nextIndex < STAGES.length) {
-    nextBtn.style.display = 'flex';
-    nextBtn.textContent = `➡️ ${STAGES[nextIndex].name}へ`;
-  } else {
-    nextBtn.style.display = 'none';
-  }
-
-  spawnConfetti();
-  showScreen('clear');
-}
-
-function spawnConfetti() {
-  const container = document.getElementById('confetti-container');
-  container.innerHTML = '';
-  const colors = ['#FF6B6B', '#4ECDC4', '#FFE66D', '#A8E6CF', '#FF8B94', '#C7CEEA'];
-  for (let i = 0; i < 60; i++) {
-    const piece = document.createElement('div');
-    piece.className = 'confetti-piece';
-    piece.style.left = Math.random() * 100 + 'vw';
-    piece.style.top = '-20px';
-    piece.style.background = colors[Math.floor(Math.random() * colors.length)];
-    piece.style.width = (6 + Math.random() * 8) + 'px';
-    piece.style.height = (6 + Math.random() * 8) + 'px';
-    piece.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
-    piece.style.animationDuration = (1.5 + Math.random() * 2) + 's';
-    piece.style.animationDelay = (Math.random() * 1.5) + 's';
-    container.appendChild(piece);
-  }
-}
-
-// ===== ZUKAN =====
-function renderZukan() {
-  const clearedCount = getClearedCount();
-  document.getElementById('zukan-progress').textContent = `${clearedCount} / 47`;
-
-  const list = document.getElementById('zukan-list');
-  list.innerHTML = '';
-
-  STAGES.forEach(stage => {
-    const cleared = isStageCleared(stage.id);
-    const card = document.createElement('div');
-    card.className = `zukan-card ${cleared ? '' : 'locked-card'}`;
-
-    const iconsHTML = stage.icons.map(icon => `
-      <div class="zukan-icon-item">${cleared ? icon : '❓'}</div>
-    `).join('');
-
-    card.innerHTML = `
-      <div class="zukan-card-header">
-        <div class="zukan-pref-name">${stage.name}</div>
-        <div class="zukan-pref-number">${stage.number} / 47</div>
-      </div>
-      <div class="zukan-icons-grid">${iconsHTML}</div>
-      ${cleared ? `<div class="zukan-description">${stage.description}</div>` : '<div class="zukan-description">クリアすると図鑑に登録されます！</div>'}
-    `;
-
-    list.appendChild(card);
+  /* ── アニメーションクラス除去 ── */
+  boardEl.querySelectorAll('.tile').forEach(el => {
+    el.classList.remove('exploding', 'dropping', 'spawning');
   });
 }
 
-// ===== UTILS =====
+/* =====================================================
+   ユーティリティ
+   ===================================================== */
 function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ===== EVENT LISTENERS =====
-function setupEventListeners() {
-  setupTitleButtons();
-
-  // Stage screen
-  document.getElementById('btn-stage-back').addEventListener('click', () => showScreen('title'));
-
-  // Game screen
-  document.getElementById('btn-game-back').addEventListener('click', () => {
-    state.isAnimating = false;
-    showScreen('stage');
-  });
-  document.getElementById('btn-restart').addEventListener('click', () => {
-    startGame(state.currentStageIndex);
-  });
-  document.getElementById('btn-to-stage').addEventListener('click', () => {
-    state.isAnimating = false;
-    showScreen('stage');
-  });
-
-  // Clear screen
-  document.getElementById('btn-next-stage').addEventListener('click', () => {
-    const nextIndex = state.currentStageIndex + 1;
-    if (nextIndex < STAGES.length) startGame(nextIndex);
-    else showScreen('stage');
-  });
-  document.getElementById('btn-clear-to-stage').addEventListener('click', () => showScreen('stage'));
-
-  // Zukan screen
-  document.getElementById('btn-zukan-back').addEventListener('click', () => showScreen('title'));
-
-  // Prevent context menu on board
-  document.getElementById('game-board').addEventListener('contextmenu', e => e.preventDefault());
+function animateBounceBack(r, c) {
+  const el = getTileEl(r, c);
+  if (!el) return;
+  el.classList.remove('bounce-back');
+  void el.offsetWidth; /* reflow */
+  el.classList.add('bounce-back');
+  el.addEventListener('animationend', () => el.classList.remove('bounce-back'), {once: true});
 }
 
-// Add shake animation CSS dynamically
-const shakeStyle = document.createElement('style');
-shakeStyle.textContent = `
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-6px) rotate(-3deg); }
-  40% { transform: translateX(6px) rotate(3deg); }
-  60% { transform: translateX(-4px) rotate(-2deg); }
-  80% { transform: translateX(4px) rotate(2deg); }
+let flashTimer = null;
+function showFlash(msg) {
+  flashEl.textContent = msg;
+  if (flashTimer) clearTimeout(flashTimer);
+  if (msg) {
+    flashTimer = setTimeout(() => { flashEl.textContent = ''; }, 2000);
+  }
 }
-`;
-document.head.appendChild(shakeStyle);
 
-// ===== START =====
+/* スコアポップアップ */
+function spawnScorePop(gained, matched) {
+  /* マッチセルの中央あたりにポップアップ */
+  const keys = [...matched];
+  const mid  = keys[Math.floor(keys.length / 2)];
+  const [r, c] = mid.split(',').map(Number);
+  const el = getTileEl(r, c);
+  if (!el) return;
+  const pop = document.createElement('div');
+  pop.className = 'score-pop';
+  pop.textContent = `+${gained}`;
+  el.appendChild(pop);
+  pop.addEventListener('animationend', () => pop.remove(), {once: true});
+}
+
+/* =====================================================
+   クリア判定
+   ===================================================== */
+function checkWin() {
+  if (score >= TARGET) {
+    setTimeout(showClear, 200);
+  }
+}
+
+function showClear() {
+  modalScore.textContent = score.toLocaleString();
+  overlay.classList.remove('hidden');
+}
+
+function hideOverlay() {
+  overlay.classList.add('hidden');
+}
+
+/* =====================================================
+   ボタンイベント
+   ===================================================== */
+document.getElementById('btn-restart').addEventListener('click', () => {
+  if (busy) return;
+  init();
+});
+
+document.getElementById('btn-again').addEventListener('click', () => {
+  init();
+});
+
+document.getElementById('btn-stages').addEventListener('click', () => {
+  /* 47都道府県ステージ一覧への導線（将来拡張用） */
+  alert('ステージ一覧は準備中です！\n現在は北海道ステージのみ実装されています。');
+});
+
+/* =====================================================
+   起動
+   ===================================================== */
 init();
