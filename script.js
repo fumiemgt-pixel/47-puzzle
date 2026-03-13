@@ -1,342 +1,571 @@
-/* =====================================================
-   北海道パズル — script.js  (キャンディクラッシュ系・連鎖対応版)
+/* ============================================================
+   北海道パズル — script.js
+   役割ごとに関数を分けた、読みやすい設計
 
-   処理フロー:
-   操作 → スワップ → マッチ判定 → 消去アニメ
-        → 重力落下 → 補充 → 再マッチ判定
-        → …（マッチ無くなるまで繰り返し）
+   主要関数一覧:
+     initGame()          — ゲーム初期化
+     generateBoard()     — 盤面生成（初期マッチなし）
+     renderBoard()       — 全タイルをDOM再描画
 
-   仕様:
-   - 初期盤面でもマッチがあれば自動解消
-   - 連鎖(コンボ)が発生する
-   - 空白マスが残らない
-   ===================================================== */
+     onTileSelect()      — タイル選択ハンドラ
+     doSwap()            — 2タイルを入れ替え試行
 
-/* ── 定数 ── */
-const COLS   = 6;
-const ROWS   = 6;
-const TARGET = 2000;
-const PIECES = ['❄️','🦀','🐄','🧀','🌽','🦊'];
+     resolveChain()      — 連鎖ループ（マッチ→消去→落下→補充→繰り返し）
+     findMatches()       — 盤面全体のマッチセルを返す
+     removeMatches()     — マッチセルにアニメを付けてデータ削除
+     expandBombBlast()   — 爆弾の爆発範囲を追加
+     activateRainbow()   — レインボー発動（同種全消し）
+     applyGravity()      — 各列を下詰め
+     fillBoard()         — 空セルに新ピース補充
 
-/*
-  画像差し替えポイント:
-  PIECES を画像パスの配列に変え、setTileContent() 内の
-  コメントを外すだけで PNG に切り替え可能。
-*/
+     createSpecialPiece()— 4/5マッチ時に特殊ピースを生成
+     calcScore()         — スコア計算（連鎖倍率あり）
 
+     makeTileEl()        — タイルDOM要素を生成
+     applyTileToEl()     — セルデータをDOM要素に反映
+     getTileEl()         — 指定位置のDOMを取得
+     rebuildDOM()        — 落下・補充後にDOMを全再構築
+
+     updateHUD()         — スコア・進捗バー更新
+     showFlash()         — フラッシュメッセージ表示
+     showCombo()         — コンボ表示
+     showScorePop()      — スコアポップアップ表示
+     showClearModal()    — クリアモーダル表示
+   ============================================================ */
+
+'use strict';
+
+/* ============================================================
+   1. 定数・設定
+   ============================================================ */
+
+/** グリッドサイズ */
+const COLS = 6;
+const ROWS = 6;
+
+/** 目標スコア */
+const TARGET_SCORE = 2000;
+
+/**
+ * 北海道ピース定義
+ * 画像に差し替える場合は imageSrc に PNG パスを指定する
+ *   例: { emoji: '❄️', imageSrc: 'images/hokkaido/1.png', label: '雪' }
+ * imageSrc が存在する場合は img タグでレンダリングされる
+ */
+const PIECES = [
+  { emoji: '❄️', imageSrc: null, label: '雪'         },
+  { emoji: '🦀', imageSrc: null, label: 'カニ'       },
+  { emoji: '🐄', imageSrc: null, label: '牛'         },
+  { emoji: '🧀', imageSrc: null, label: 'チーズ'     },
+  { emoji: '🌽', imageSrc: null, label: 'とうもろこし'},
+  { emoji: '🦊', imageSrc: null, label: 'キタキツネ' },
+];
+
+/** 特殊ピース識別子 */
+const SPECIAL = { BOMB: 'BOMB', RAINBOW: 'RAINBOW' };
+
+/** スコアテーブル（マッチ数→基本スコア） */
 const SCORE_TABLE = { 3: 100, 4: 200, 5: 500 };
 
-/* アニメーション時間 (ms) */
-const T_EXPLODE = 300;
-const T_FALL    = 280;
-const T_SPAWN   = 280;
+/** アニメーション時間 (ms) */
+const ANIM = {
+  POP:   300,  // 消去
+  DROP:  270,  // 落下
+  SPAWN: 270,  // 補充
+  WAIT:  80,   // 連鎖間インターバル
+};
 
-/* ── 状態 ── */
-let board      = [];
+/* ============================================================
+   2. ゲーム状態
+   ============================================================ */
+
+/** セル: { type: 0-5 | 'BOMB' | 'RAINBOW' } */
+let board      = [];   // board[row][col] = cell | null
 let score      = 0;
 let busy       = false;
-let selected   = null;   // {row, col} | null
+let selected   = null; // { row, col } | null
 let comboCount = 0;
 
-/* ── DOM ── */
-const boardEl    = document.getElementById('board');
-const scoreEl    = document.getElementById('score-display');
-const targetEl   = document.getElementById('target-display');
-const progFill   = document.getElementById('prog-fill');
-const progPct    = document.getElementById('prog-pct');
-const flashEl    = document.getElementById('flash');
-const overlay    = document.getElementById('overlay');
-const modalScore = document.getElementById('modal-score');
+/* ============================================================
+   3. DOM 参照
+   ============================================================ */
+const boardEl      = document.getElementById('js-board');
+const scoreEl      = document.getElementById('js-score');
+const progBarEl    = document.getElementById('js-prog-bar');
+const progLabelEl  = document.getElementById('js-prog-label');
+const comboEl      = document.getElementById('js-combo');
+const flashEl      = document.getElementById('js-flash');
+const overlayEl    = document.getElementById('js-overlay');
+const modalScoreEl = document.getElementById('js-modal-score');
 
-targetEl.textContent = TARGET.toLocaleString();
+/* ============================================================
+   4. 初期化
+   ============================================================ */
 
-/* =====================================================
-   初期化
-   ===================================================== */
-async function init() {
+/**
+ * initGame()
+ * ゲーム全体をリセットしてスタート
+ */
+async function initGame() {
   score      = 0;
   comboCount = 0;
   selected   = null;
   busy       = true;
 
   board = generateBoard();
-  renderAll();
+  renderBoard();
   updateHUD();
-  hideOverlay();
-  showFlash('');
+  hideModal();
+  hideCombo();
+  hideFlash();
 
-  /* 仕様: 開始直後もマッチがあれば自動解消 */
-  await runCascade();
+  // 開始直後のマッチを自動解消
+  await resolveChain();
 
   busy = false;
 }
 
-/* =====================================================
-   ボード生成（初期マッチをなるべく作らない）
-   ===================================================== */
+/* ============================================================
+   5. 盤面生成
+   ============================================================ */
+
+/**
+ * generateBoard()
+ * 6×6 のセルを生成する
+ * 左2マス・上2マスと同じにならないようにして
+ * 初期マッチをなるべく防ぐ
+ * （残ったマッチは initGame の resolveChain で解消する）
+ */
 function generateBoard() {
-  const b = Array.from({length: ROWS}, () => new Array(COLS).fill(0));
+  const b = [];
   for (let r = 0; r < ROWS; r++) {
+    b[r] = [];
     for (let c = 0; c < COLS; c++) {
       const forbidden = new Set();
-      if (c >= 2 && b[r][c-1] === b[r][c-2]) forbidden.add(b[r][c-1]);
-      if (r >= 2 && b[r-1][c] === b[r-2][c]) forbidden.add(b[r-1][c]);
-      const pool = PIECES.map((_,i) => i).filter(i => !forbidden.has(i));
-      b[r][c] = pool[Math.floor(Math.random() * pool.length)];
+      if (c >= 2 && b[r][c-1].type === b[r][c-2].type) {
+        forbidden.add(b[r][c-1].type);
+      }
+      if (r >= 2 && b[r-1][c].type === b[r-2][c].type) {
+        forbidden.add(b[r-1][c].type);
+      }
+      const pool = PIECES.map((_, i) => i).filter(i => !forbidden.has(i));
+      b[r][c] = { type: pool[Math.floor(Math.random() * pool.length)] };
     }
   }
   return b;
 }
 
-/* =====================================================
-   描画
-   ===================================================== */
-function renderAll() {
+/**
+ * randomNormalType()
+ * 通常ピースの番号をランダムに返す
+ */
+function randomNormalType() {
+  return Math.floor(Math.random() * PIECES.length);
+}
+
+/* ============================================================
+   6. 描画
+   ============================================================ */
+
+/**
+ * renderBoard()
+ * board 配列の状態を元に盤面全体を再描画する
+ */
+function renderBoard() {
   boardEl.innerHTML = '';
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      boardEl.appendChild(makeTileEl(r, c));
+      const el = makeTileEl(r, c);
+      boardEl.appendChild(el);
     }
   }
 }
 
-function makeTileEl(r, c) {
+/**
+ * makeTileEl(row, col)
+ * 指定位置のタイルDOM要素を新規作成してイベントを設定する
+ */
+function makeTileEl(row, col) {
   const el = document.createElement('div');
   el.className   = 'tile';
-  el.dataset.row = r;
-  el.dataset.col = c;
-  applyType(el, board[r][c]);
-  attachInput(el, r, c);
+  el.dataset.row = row;
+  el.dataset.col = col;
+  el.setAttribute('role', 'gridcell');
+  applyTileToEl(el, board[row][col]);
+  attachTileEvents(el, row, col);
   return el;
 }
 
-function applyType(el, type) {
-  el.dataset.type = type;
-  setTileContent(el, type);
+/**
+ * applyTileToEl(el, cell)
+ * セルデータをDOM要素の見た目に反映する
+ * ─ cell.type が数値 → 通常ピース（emoji or 画像）
+ * ─ cell.type が BOMB → 爆弾
+ * ─ cell.type が RAINBOW → レインボー
+ */
+function applyTileToEl(el, cell) {
+  // 特殊クラスをリセット
+  el.classList.remove('is-bomb', 'is-rainbow');
+  el.removeAttribute('data-type');
+
+  if (cell.type === SPECIAL.BOMB) {
+    el.classList.add('is-bomb');
+    el.dataset.type = 'special';
+    setTileContent(el, '💣', null);
+    el.setAttribute('aria-label', '爆弾');
+    return;
+  }
+
+  if (cell.type === SPECIAL.RAINBOW) {
+    el.classList.add('is-rainbow');
+    el.dataset.type = 'special';
+    setTileContent(el, '🌈', null);
+    el.setAttribute('aria-label', 'レインボー');
+    return;
+  }
+
+  // 通常ピース
+  const piece = PIECES[cell.type];
+  el.dataset.type = cell.type;
+  setTileContent(el, piece.emoji, piece.imageSrc);
+  el.setAttribute('aria-label', piece.label);
 }
 
-function setTileContent(el, type) {
-  /*
-    画像差し替えポイント:
-    if (PIECES[type]?.endsWith('.png')) {
-      el.innerHTML = `<img src="${PIECES[type]}" alt="${type}"
-        style="width:78%;height:78%;object-fit:contain;pointer-events:none;">`;
-      return;
-    }
-  */
-  el.textContent = PIECES[type] ?? '';
+/**
+ * setTileContent(el, emoji, imageSrc)
+ * imageSrc があれば <img> タグ、なければテキスト(emoji)で描画する
+ * ─ 画像差し替え時はここだけ変わる
+ */
+function setTileContent(el, emoji, imageSrc) {
+  el.innerHTML = '';
+  if (imageSrc) {
+    const img = document.createElement('img');
+    img.src = imageSrc;
+    img.alt = emoji;
+    img.draggable = false;
+    el.appendChild(img);
+  } else {
+    el.textContent = emoji;
+  }
 }
 
-function getTileEl(r, c) {
-  return boardEl.querySelector(`.tile[data-row="${r}"][data-col="${c}"]`);
+/**
+ * getTileEl(row, col)
+ * DOM から指定位置のタイル要素を取得する
+ */
+function getTileEl(row, col) {
+  return boardEl.querySelector(`.tile[data-row="${row}"][data-col="${col}"]`);
 }
 
-/* =====================================================
-   HUD
-   ===================================================== */
-function updateHUD() {
-  scoreEl.textContent = score.toLocaleString();
-  const pct = Math.min(100, Math.round(score / TARGET * 100));
-  progFill.style.width = pct + '%';
-  progPct.textContent  = `${score.toLocaleString()} / ${TARGET.toLocaleString()}`;
-}
+/* ============================================================
+   7. 入力処理（クリック / タップ / スワイプ）
+   ============================================================ */
 
-/* =====================================================
-   入力（クリック選択 & タッチスワイプ）
-   ===================================================== */
-let touchStart = null;
+let touchOrigin = null; // { row, col, x, y }
 
-function attachInput(el, r, c) {
-  /* PC クリック */
-  el.addEventListener('pointerdown', e => {
+/**
+ * attachTileEvents(el, row, col)
+ * タイル要素にクリック・タッチイベントを登録する
+ */
+function attachTileEvents(el, row, col) {
+  // ── PC: クリック選択 ──
+  el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'touch') return;
     if (busy) return;
-    onSelect(r, c);
+    onTileSelect(row, col);
   });
 
-  /* スマホ スワイプ */
-  el.addEventListener('touchstart', e => {
+  // ── スマホ: タッチ開始 ──
+  el.addEventListener('touchstart', (e) => {
     e.preventDefault();
     if (busy) return;
     const t = e.touches[0];
-    touchStart = {r, c, x: t.clientX, y: t.clientY};
-  }, {passive: false});
+    touchOrigin = { row, col, x: t.clientX, y: t.clientY };
+  }, { passive: false });
 
-  el.addEventListener('touchend', e => {
-    if (!touchStart || busy) { touchStart = null; return; }
+  // ── スマホ: タッチ終了 → 方向を判定してスワップ ──
+  el.addEventListener('touchend', (e) => {
+    if (!touchOrigin || busy) { touchOrigin = null; return; }
     e.preventDefault();
-    const t  = e.changedTouches[0];
-    const dx = t.clientX - touchStart.x;
-    const dy = t.clientY - touchStart.y;
-    const {r: or, c: oc} = touchStart;
-    touchStart = null;
 
-    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
-      onSelect(or, oc);
+    const t  = e.changedTouches[0];
+    const dx = t.clientX - touchOrigin.x;
+    const dy = t.clientY - touchOrigin.y;
+    const { row: or, col: oc } = touchOrigin;
+    touchOrigin = null;
+
+    // 移動量が小さければタップ扱い
+    if (Math.abs(dx) < 9 && Math.abs(dy) < 9) {
+      onTileSelect(or, oc);
       return;
     }
+
+    // スワイプ方向の隣セルを計算
     let nr = or, nc = oc;
     if (Math.abs(dx) >= Math.abs(dy)) {
       nc = oc + (dx > 0 ? 1 : -1);
     } else {
       nr = or + (dy > 0 ? 1 : -1);
     }
-    if (!inBounds(nr, nc)) return;
-    clearSel();
+
+    if (!isInBounds(nr, nc)) return;
+    clearSelection();
     doSwap(or, oc, nr, nc);
-  }, {passive: false});
+  }, { passive: false });
 }
 
-function onSelect(r, c) {
+/**
+ * onTileSelect(row, col)
+ * タイルをタップ / クリックしたときの選択ロジック
+ */
+function onTileSelect(row, col) {
   if (busy) return;
+
+  // 未選択 → このタイルを選択
   if (!selected) {
-    selected = {row: r, col: c};
-    getTileEl(r, c)?.classList.add('selected');
+    selected = { row, col };
+    getTileEl(row, col)?.classList.add('is-selected');
     return;
   }
-  const {row: sr, col: sc} = selected;
-  if (sr === r && sc === c) { clearSel(); return; }
-  if (isAdj(sr, sc, r, c)) {
-    clearSel();
-    doSwap(sr, sc, r, c);
-  } else {
-    clearSel();
-    selected = {row: r, col: c};
-    getTileEl(r, c)?.classList.add('selected');
+
+  const { row: sr, col: sc } = selected;
+
+  // 同じタイルを再タップ → 選択解除
+  if (sr === row && sc === col) {
+    clearSelection();
+    return;
   }
+
+  // 隣接タイルなら入れ替え試行
+  if (isAdjacent(sr, sc, row, col)) {
+    clearSelection();
+    doSwap(sr, sc, row, col);
+    return;
+  }
+
+  // 非隣接 → 選択先を切り替え
+  clearSelection();
+  selected = { row, col };
+  getTileEl(row, col)?.classList.add('is-selected');
 }
 
-function clearSel() {
+/**
+ * clearSelection()
+ * 現在の選択状態を解除する
+ */
+function clearSelection() {
   if (selected) {
-    getTileEl(selected.row, selected.col)?.classList.remove('selected');
+    getTileEl(selected.row, selected.col)?.classList.remove('is-selected');
     selected = null;
   }
 }
 
-function isAdj(r1,c1,r2,c2) { return Math.abs(r1-r2)+Math.abs(c1-c2)===1; }
-function inBounds(r,c)       { return r>=0 && r<ROWS && c>=0 && c<COLS; }
+/* ============================================================
+   8. スワップ処理
+   ============================================================ */
 
-/* =====================================================
-   スワップ
-   ===================================================== */
+/**
+ * doSwap(r1, c1, r2, c2)
+ * 2タイルの入れ替えを試みる
+ * マッチしなければ元に戻す
+ */
 async function doSwap(r1, c1, r2, c2) {
   if (busy) return;
   busy = true;
-  showFlash('');
   comboCount = 0;
+  hideCombo();
+  hideFlash();
 
-  swapData(r1, c1, r2, c2);
+  const cellA = board[r1][c1];
+  const cellB = board[r2][c2];
+
+  // ── レインボー発動チェック ──
+  // レインボーと通常ピースを入れ替えた場合、即発動
+  if (cellA.type === SPECIAL.RAINBOW && isNormalType(cellB.type)) {
+    swapBoardData(r1, c1, r2, c2);
+    applyTileToEl(getTileEl(r1, c1), board[r1][c1]);
+    applyTileToEl(getTileEl(r2, c2), board[r2][c2]);
+    await activateRainbow(cellB.type);
+    busy = false;
+    checkWin();
+    return;
+  }
+  if (cellB.type === SPECIAL.RAINBOW && isNormalType(cellA.type)) {
+    swapBoardData(r1, c1, r2, c2);
+    applyTileToEl(getTileEl(r1, c1), board[r1][c1]);
+    applyTileToEl(getTileEl(r2, c2), board[r2][c2]);
+    await activateRainbow(cellA.type);
+    busy = false;
+    checkWin();
+    return;
+  }
+
+  // ── 通常スワップ ──
+  swapBoardData(r1, c1, r2, c2);
+
   const matched = findMatches();
 
   if (matched.size === 0) {
-    /* マッチなし → 元に戻す */
-    swapData(r1, c1, r2, c2);
-    const e1 = getTileEl(r1, c1);
-    const e2 = getTileEl(r2, c2);
-    applyType(e1, board[r1][c1]);
-    applyType(e2, board[r2][c2]);
-    triggerBounce(e1);
-    triggerBounce(e2);
+    // マッチなし → 元に戻す
+    swapBoardData(r1, c1, r2, c2);
+    applyTileToEl(getTileEl(r1, c1), board[r1][c1]);
+    applyTileToEl(getTileEl(r2, c2), board[r2][c2]);
+    triggerBounce(getTileEl(r1, c1));
+    triggerBounce(getTileEl(r2, c2));
     showFlash('そこには並ばないよ…');
     busy = false;
     return;
   }
 
-  /* DOM にスワップを即時反映 */
-  applyType(getTileEl(r1, c1), board[r1][c1]);
-  applyType(getTileEl(r2, c2), board[r2][c2]);
+  // DOM に入れ替えを反映
+  applyTileToEl(getTileEl(r1, c1), board[r1][c1]);
+  applyTileToEl(getTileEl(r2, c2), board[r2][c2]);
 
-  /* 連鎖ループ */
-  await runCascade();
+  // 連鎖ループ開始
+  await resolveChain();
 
   busy = false;
   checkWin();
 }
 
-function swapData(r1,c1,r2,c2) {
-  const t = board[r1][c1];
+/**
+ * swapBoardData(r1, c1, r2, c2)
+ * board 配列上で2セルを入れ替える（DOM は変えない）
+ */
+function swapBoardData(r1, c1, r2, c2) {
+  const tmp     = board[r1][c1];
   board[r1][c1] = board[r2][c2];
-  board[r2][c2] = t;
+  board[r2][c2] = tmp;
 }
 
-/* =====================================================
-   連鎖ループ ← キャンディクラッシュ系の中核
-   「マッチ → 消去 → 落下 → 補充 → 再マッチ」を繰り返す
-   ===================================================== */
-async function runCascade() {
+/* ============================================================
+   9. 連鎖ループ
+   ============================================================ */
+
+/**
+ * resolveChain()
+ * ─ マッチ判定
+ * ─ マッチあり → 消去 → 落下 → 補充 → 再判定
+ * ─ マッチなし → ループ終了
+ * をマッチがなくなるまで繰り返す
+ */
+async function resolveChain() {
   while (true) {
     const matched = findMatches();
-    if (matched.size === 0) break;   // マッチなし → 終了
+    if (matched.size === 0) break;
 
+    // 連鎖カウント
     comboCount++;
+    if (comboCount >= 2) {
+      showCombo(comboCount);
+    }
 
-    /* スコア加算 */
+    // 特殊ピース生成判定（消去前に行う）
+    const specialGen = detectSpecialGeneration(matched);
+
+    // スコア加算
     const gained = calcScore(matched, comboCount);
     score += gained;
     updateHUD();
+    showScorePop(gained, matched);
     showScoreMessage(gained, comboCount);
-    spawnScorePop(gained, matched);
 
-    /* --- STEP 1: 消去アニメーション --- */
-    matched.forEach(key => {
-      const [r, c] = parseKey(key);
-      getTileEl(r, c)?.classList.add('exploding');
-    });
-    await wait(T_EXPLODE);
+    // 爆弾が含まれていれば範囲拡大
+    expandBombBlast(matched);
 
-    /* --- STEP 2: データを -1（空）にする --- */
-    matched.forEach(key => {
-      const [r, c] = parseKey(key);
-      board[r][c] = -1;
-    });
+    // STEP 1: 消去アニメーション
+    await removeMatches(matched);
 
-    /* --- STEP 3: 重力落下（各列を下詰め） --- */
+    // STEP 2: 重力落下
     applyGravity();
 
-    /* --- STEP 4: 上端の空きに新しいピースを補充 --- */
+    // STEP 3: 特殊ピース配置（落下後の正しい位置に置く）
+    if (specialGen) {
+      placeSpecialPiece(specialGen);
+    }
+
+    // STEP 4: 空きを補充
     fillBoard();
 
-    /* --- STEP 5: DOM 再構築（落下 + 補充アニメ） --- */
-    rebuildDOM(matched);
-    await wait(Math.max(T_FALL, T_SPAWN) + 60);
+    // STEP 5: DOM 再構築（落下・補充アニメ）
+    rebuildDOM(matched, specialGen);
+    await wait(Math.max(ANIM.DROP, ANIM.SPAWN) + 70);
 
-    /* アニメクラスを除去してから次のループへ */
+    // アニメクラスを除去
     boardEl.querySelectorAll('.tile').forEach(el => {
-      el.classList.remove('exploding', 'dropping', 'spawning');
+      el.classList.remove('anim-drop', 'anim-spawn', 'anim-blast', 'is-animating');
     });
 
-    await wait(80);   /* 視認のための微小インターバル */
+    // 次の連鎖前に少し間を置く
+    await wait(ANIM.WAIT);
   }
+
+  // 全連鎖完了
+  comboCount = 0;
+  hideCombo();
 }
 
-/* =====================================================
-   マッチ判定
-   ===================================================== */
+/* ============================================================
+   10. マッチ判定
+   ============================================================ */
+
+/**
+ * findMatches()
+ * 盤面全体を走査し、3個以上連続するセルのキーを Set で返す
+ * キー形式: "row,col"
+ * 特殊ピースはマッチ対象外（通常ピースのみ判定）
+ */
 function findMatches() {
   const cells = new Set();
 
-  /* 横 */
+  // 横方向
   for (let r = 0; r < ROWS; r++) {
-    let run = 1;
+    let runStart = 0;
+    let runLen   = 1;
     for (let c = 1; c <= COLS; c++) {
-      if (c < COLS && board[r][c] !== -1 && board[r][c] === board[r][c-1]) {
-        run++;
+      const prev = board[r][c - 1];
+      const curr = c < COLS ? board[r][c] : null;
+      const same = curr
+        && isNormalType(prev.type)
+        && isNormalType(curr.type)
+        && prev.type === curr.type;
+
+      if (same) {
+        runLen++;
       } else {
-        if (run >= 3) for (let k = c-run; k < c; k++) cells.add(`${r},${k}`);
-        run = 1;
+        if (runLen >= 3) {
+          for (let k = runStart; k < runStart + runLen; k++) {
+            cells.add(`${r},${k}`);
+          }
+        }
+        runStart = c;
+        runLen   = 1;
       }
     }
   }
 
-  /* 縦 */
+  // 縦方向
   for (let c = 0; c < COLS; c++) {
-    let run = 1;
+    let runStart = 0;
+    let runLen   = 1;
     for (let r = 1; r <= ROWS; r++) {
-      if (r < ROWS && board[r][c] !== -1 && board[r][c] === board[r-1][c]) {
-        run++;
+      const prev = board[r - 1][c];
+      const curr = r < ROWS ? board[r][c] : null;
+      const same = curr
+        && isNormalType(prev.type)
+        && isNormalType(curr.type)
+        && prev.type === curr.type;
+
+      if (same) {
+        runLen++;
       } else {
-        if (run >= 3) for (let k = r-run; k < r; k++) cells.add(`${k},${c}`);
-        run = 1;
+        if (runLen >= 3) {
+          for (let k = runStart; k < runStart + runLen; k++) {
+            cells.add(`${k},${c}`);
+          }
+        }
+        runStart = r;
+        runLen   = 1;
       }
     }
   }
@@ -344,172 +573,534 @@ function findMatches() {
   return cells;
 }
 
-/* =====================================================
-   重力: 各列を下詰めにする
-   例) col = [A, -1, B, -1, C, D]（row0→5）
-     →      [-1, -1, A,  B, C, D]
-   ===================================================== */
-function applyGravity() {
-  for (let c = 0; c < COLS; c++) {
-    /* 下から走査して非空の値を下から詰める */
-    const vals = [];
-    for (let r = ROWS - 1; r >= 0; r--) {
-      if (board[r][c] !== -1) vals.push(board[r][c]);
+/* ============================================================
+   11. 消去
+   ============================================================ */
+
+/**
+ * removeMatches(matched)
+ * マッチセルに消去アニメーションを付け、
+ * アニメ完了後に board から削除（null にする）
+ */
+async function removeMatches(matched) {
+  matched.forEach(key => {
+    const [r, c] = parseKey(key);
+    const el = getTileEl(r, c);
+    if (el) {
+      el.classList.add('anim-pop', 'is-animating');
     }
-    /* 下から埋め直す */
-    for (let r = ROWS - 1; r >= 0; r--) {
-      board[r][c] = vals.length > 0 ? vals.shift() : -1;
-    }
-  }
+  });
+
+  await wait(ANIM.POP);
+
+  matched.forEach(key => {
+    const [r, c] = parseKey(key);
+    board[r][c] = null;
+  });
 }
 
-/* =====================================================
-   補充: board に残った -1 をランダムピースで埋める
-   ===================================================== */
-function fillBoard() {
+/* ============================================================
+   12. 爆弾処理
+   ============================================================ */
+
+/**
+ * expandBombBlast(matched)
+ * matched セット内に爆弾ピースが含まれていれば
+ * 周囲8マスのキーを matched に追加し、
+ * 視覚フラッシュを当てる
+ */
+function expandBombBlast(matched) {
+  const bombs = [];
+  matched.forEach(key => {
+    const [r, c] = parseKey(key);
+    if (board[r][c]?.type === SPECIAL.BOMB) {
+      bombs.push([r, c]);
+    }
+  });
+
+  if (bombs.length === 0) return;
+
+  showFlash('💥 爆発！');
+
+  bombs.forEach(([br, bc]) => {
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const nr = br + dr, nc = bc + dc;
+        if (!isInBounds(nr, nc)) continue;
+        const key = `${nr},${nc}`;
+        if (!matched.has(key)) {
+          matched.add(key);
+          // 爆発範囲フラッシュ
+          getTileEl(nr, nc)?.classList.add('anim-blast');
+        }
+      }
+    }
+  });
+}
+
+/* ============================================================
+   13. レインボー処理
+   ============================================================ */
+
+/**
+ * activateRainbow(targetType)
+ * targetType と同じ通常ピースをすべて消す
+ */
+async function activateRainbow(targetType) {
+  const label = PIECES[targetType]?.label ?? '';
+  showFlash(`🌈 ${label} を全消し！`);
+
+  const matched = new Set();
+
+  // 同種を全マーク
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      if (board[r][c] === -1) {
-        board[r][c] = Math.floor(Math.random() * PIECES.length);
+      if (board[r][c]?.type === targetType) {
+        matched.add(`${r},${c}`);
+      }
+    }
+  }
+  // レインボー自身も消す
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c]?.type === SPECIAL.RAINBOW) {
+        matched.add(`${r},${c}`);
+      }
+    }
+  }
+
+  const gained = matched.size * 80;
+  score += gained;
+  updateHUD();
+  showScorePop(gained, matched);
+
+  await removeMatches(matched);
+  applyGravity();
+  fillBoard();
+  rebuildDOM(matched, null);
+  await wait(Math.max(ANIM.DROP, ANIM.SPAWN) + 70);
+
+  boardEl.querySelectorAll('.tile').forEach(el => {
+    el.classList.remove('anim-drop', 'anim-spawn', 'is-animating');
+  });
+  await wait(ANIM.WAIT);
+
+  // 連鎖継続
+  await resolveChain();
+}
+
+/* ============================================================
+   14. 特殊ピース生成
+   ============================================================ */
+
+/**
+ * detectSpecialGeneration(matched)
+ * マッチ内に4個以上の連続ランがあれば特殊ピース情報を返す
+ * ─ 5個以上 → RAINBOW
+ * ─ 4個     → BOMB
+ * 複数ある場合は最長優先、同点なら最後に見つけた方
+ */
+function detectSpecialGeneration(matched) {
+  let best = null;
+
+  // 横ラン
+  for (let r = 0; r < ROWS; r++) {
+    let run = [];
+    for (let c = 0; c <= COLS; c++) {
+      if (c < COLS && matched.has(`${r},${c}`)) {
+        run.push([r, c]);
+      } else {
+        if (run.length >= 4) {
+          if (!best || run.length > best.run.length) best = { run: [...run] };
+        }
+        run = [];
+      }
+    }
+  }
+
+  // 縦ラン
+  for (let c = 0; c < COLS; c++) {
+    let run = [];
+    for (let r = 0; r <= ROWS; r++) {
+      if (r < ROWS && matched.has(`${r},${c}`)) {
+        run.push([r, c]);
+      } else {
+        if (run.length >= 4) {
+          if (!best || run.length > best.run.length) best = { run: [...run] };
+        }
+        run = [];
+      }
+    }
+  }
+
+  if (!best) return null;
+
+  const specialType = best.run.length >= 5 ? SPECIAL.RAINBOW : SPECIAL.BOMB;
+  // 生成位置: ランの中央
+  const mid = best.run[Math.floor(best.run.length / 2)];
+
+  return { row: mid[0], col: mid[1], type: specialType };
+}
+
+/**
+ * createSpecialPiece(type)
+ * 特殊ピースのセルオブジェクトを作る
+ */
+function createSpecialPiece(type) {
+  return { type };
+}
+
+/**
+ * placeSpecialPiece(gen)
+ * applyGravity 後の正しい位置に特殊ピースを配置する
+ * gen.col の列について一番下の null を探す
+ */
+function placeSpecialPiece(gen) {
+  // applyGravity 後は上端に null が固まっているので
+  // 指定行近辺の null に配置する
+  // ここでは単純に gen.row, gen.col の位置（null のはず）に置く
+  if (board[gen.row][gen.col] === null) {
+    board[gen.row][gen.col] = createSpecialPiece(gen.type);
+  } else {
+    // 万一埋まっていたら列の上端の null に置く
+    for (let r = 0; r < ROWS; r++) {
+      if (board[r][gen.col] === null) {
+        board[r][gen.col] = createSpecialPiece(gen.type);
+        break;
       }
     }
   }
 }
 
-/* =====================================================
-   DOM 再構築（落下 + 補充アニメーション）
-   ===================================================== */
-function rebuildDOM(matched) {
-  /* 列ごとに何個消えたか = 上から何行が補充ピースか */
-  const newRows = new Array(COLS).fill(0);
+/* ============================================================
+   15. 重力・補充
+   ============================================================ */
+
+/**
+ * applyGravity()
+ * 各列について、null を取り除いてピースを下詰めにする
+ * 上端の空きは null のままにしておく（fillBoard で補充）
+ *
+ * 例: col = [A, null, B, null, C, D]  (上→下)
+ *   → [-----------]
+ *      [null, null, A, B, C, D]
+ */
+function applyGravity() {
+  for (let c = 0; c < COLS; c++) {
+    // 下から走査し、非null を集める（下の値が先頭）
+    const vals = [];
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (board[r][c] !== null) {
+        vals.push(board[r][c]);
+      }
+    }
+    // 下から詰め直す
+    for (let r = ROWS - 1; r >= 0; r--) {
+      board[r][c] = vals.length > 0 ? vals.shift() : null;
+    }
+  }
+}
+
+/**
+ * fillBoard()
+ * board に残っている null をすべて新しいランダムピースで埋める
+ * 空白マスが残りっぱなしにならないように必ず全埋めする
+ */
+function fillBoard() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (board[r][c] === null) {
+        board[r][c] = { type: randomNormalType() };
+      }
+    }
+  }
+}
+
+/* ============================================================
+   16. DOM 再構築（落下 + 補充アニメーション）
+   ============================================================ */
+
+/**
+ * rebuildDOM(matched, specialGen)
+ * 落下・補充後の board に合わせて DOM を再構築する
+ *
+ * アニメーション振り分け:
+ * ─ 「消去された列の上端 N 行」 → anim-spawn（新規補充）
+ * ─ それ以外 → anim-drop（落下）
+ */
+function rebuildDOM(matched, specialGen) {
+  // 列ごとに何個消えたか（= その列の上端から何行が補充されたか）
+  const newRowsPerCol = new Array(COLS).fill(0);
   matched.forEach(key => {
     const [, c] = parseKey(key);
-    newRows[c]++;
+    newRowsPerCol[c]++;
   });
 
   boardEl.innerHTML = '';
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const el = makeTileEl(r, c);
-      /* 列の上端から newRows[c] 行 = 新規補充ピース */
-      el.classList.add(r < newRows[c] ? 'spawning' : 'dropping');
+
+      // 特殊ピース生成位置は特別に光らせる
+      if (specialGen && r === specialGen.row && c === specialGen.col) {
+        el.classList.add('anim-spawn');
+      } else if (r < newRowsPerCol[c]) {
+        // 列上端の補充ピース
+        el.classList.add('anim-spawn');
+      } else {
+        // 落下ピース
+        el.classList.add('anim-drop');
+      }
+
       boardEl.appendChild(el);
     }
   }
 }
 
-/* =====================================================
-   スコア計算
-   ===================================================== */
+/* ============================================================
+   17. スコア計算
+   ============================================================ */
+
+/**
+ * calcScore(matched, combo)
+ * ─ 横・縦の各ランの長さごとにスコアを加算
+ * ─ 2連鎖目から倍率がかかる（1.5倍、2倍、2.5倍…）
+ */
 function calcScore(matched, combo) {
-  /* ランごとの長さを収集 */
-  const runs = [];
-  for (let r = 0; r < ROWS; r++) {
-    let run = 0;
-    for (let c = 0; c < COLS; c++) {
-      matched.has(`${r},${c}`) ? run++ : (run >= 3 && runs.push(run), run = 0);
-    }
-    if (run >= 3) runs.push(run);
-  }
-  for (let c = 0; c < COLS; c++) {
-    let run = 0;
-    for (let r = 0; r < ROWS; r++) {
-      matched.has(`${r},${c}`) ? run++ : (run >= 3 && runs.push(run), run = 0);
-    }
-    if (run >= 3) runs.push(run);
-  }
+  const runs = collectRuns(matched);
 
-  const base = runs.length
-    ? runs.reduce((s, len) => s + (SCORE_TABLE[Math.min(len,5)] ?? SCORE_TABLE[5]), 0)
-    : matched.size * 100;
+  const base = runs.reduce((sum, len) => {
+    const key = Math.min(len, 5);
+    return sum + (SCORE_TABLE[key] ?? SCORE_TABLE[5]);
+  }, 0) || matched.size * 80; // フォールバック
 
-  /* 連鎖ボーナス (2連鎖目から 1.5倍、3連鎖→2倍…) */
+  // 連鎖ボーナス
   const mult = combo >= 2 ? 1 + (combo - 1) * 0.5 : 1;
   return Math.round(base * mult);
 }
 
-/* =====================================================
-   UI フィードバック
-   ===================================================== */
-let flashTimer = null;
-function showFlash(msg) {
-  flashEl.textContent = msg;
-  if (flashTimer) clearTimeout(flashTimer);
-  if (msg) flashTimer = setTimeout(() => { flashEl.textContent = ''; }, 2200);
+/**
+ * collectRuns(matched)
+ * matched セットから横・縦のランの長さ配列を収集する
+ */
+function collectRuns(matched) {
+  const runs = [];
+
+  // 横
+  for (let r = 0; r < ROWS; r++) {
+    let run = 0;
+    for (let c = 0; c < COLS; c++) {
+      if (matched.has(`${r},${c}`)) {
+        run++;
+      } else {
+        if (run >= 3) runs.push(run);
+        run = 0;
+      }
+    }
+    if (run >= 3) runs.push(run);
+  }
+
+  // 縦
+  for (let c = 0; c < COLS; c++) {
+    let run = 0;
+    for (let r = 0; r < ROWS; r++) {
+      if (matched.has(`${r},${c}`)) {
+        run++;
+      } else {
+        if (run >= 3) runs.push(run);
+        run = 0;
+      }
+    }
+    if (run >= 3) runs.push(run);
+  }
+
+  return runs;
 }
 
+/* ============================================================
+   18. HUD 更新
+   ============================================================ */
+
+/**
+ * updateHUD()
+ * スコア表示・進捗バー・ラベルを更新する
+ */
+function updateHUD() {
+  scoreEl.textContent     = score.toLocaleString();
+  const pct               = Math.min(100, Math.round(score / TARGET_SCORE * 100));
+  progBarEl.style.width   = pct + '%';
+  progLabelEl.textContent = `${score.toLocaleString()} / ${TARGET_SCORE.toLocaleString()}`;
+}
+
+/* ============================================================
+   19. フラッシュ / コンボ / スコアポップアップ
+   ============================================================ */
+
+let flashTimer = null;
+
+/**
+ * showFlash(msg)
+ * 画面上部にメッセージを一時表示する
+ */
+function showFlash(msg) {
+  flashEl.textContent = msg;
+  flashEl.classList.remove('is-hidden');
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(hideFlash, 2400);
+}
+
+function hideFlash() {
+  flashEl.classList.add('is-hidden');
+  flashEl.textContent = '';
+}
+
+/**
+ * showCombo(n)
+ * コンボ数を表示する
+ */
+function showCombo(n) {
+  comboEl.textContent = `🔥 ${n}連鎖！`;
+  comboEl.classList.remove('is-hidden');
+  // アニメーションリセット
+  comboEl.style.animation = 'none';
+  void comboEl.offsetWidth;
+  comboEl.style.animation = '';
+}
+
+function hideCombo() {
+  comboEl.classList.add('is-hidden');
+  comboEl.textContent = '';
+}
+
+/**
+ * showScoreMessage(gained, combo)
+ * スコアとコンボに応じたメッセージをフラッシュ表示する
+ */
 function showScoreMessage(gained, combo) {
-  if      (combo >= 3)    showFlash(`🌟 ${combo} 連鎖！ +${gained}`);
-  else if (combo >= 2)    showFlash(`✨ ${combo} 連鎖！ +${gained}`);
-  else if (gained >= 500) showFlash(`🔥 ビッグマッチ！ +${gained}`);
+  if      (combo >= 4)    showFlash(`🌟 ${combo}連鎖！ +${gained}`);
+  else if (combo >= 3)    showFlash(`✨ ${combo}連鎖！ +${gained}`);
+  else if (combo >= 2)    showFlash(`🔥 ${combo}連鎖！ +${gained}`);
+  else if (gained >= 500) showFlash(`💥 ビッグマッチ！ +${gained}`);
   else if (gained >= 200) showFlash(`⭐ ナイス！ +${gained}`);
   else                    showFlash(`+${gained}`);
 }
 
-function spawnScorePop(gained, matched) {
-  const keys = [...matched];
+/**
+ * showScorePop(gained, matched)
+ * スコア加算時に盤面上にポップアップを表示する
+ */
+function showScorePop(gained, matched) {
+  if (!matched.size) return;
+
+  const keys  = [...matched];
   const [r, c] = parseKey(keys[Math.floor(keys.length / 2)]);
+
   const rect  = boardEl.getBoundingClientRect();
   const cellW = rect.width  / COLS;
   const cellH = rect.height / ROWS;
 
   const pop = document.createElement('div');
-  pop.className   = 'score-pop';
+  pop.className = 'score-pop';
   pop.textContent = `+${gained}`;
-  pop.style.cssText = `
-    position:absolute;
-    left:${c * cellW + cellW/2 - 22}px;
-    top:${r * cellH + cellH/2 - 12}px;
-    pointer-events:none;
-    z-index:99;
-  `;
-  boardEl.style.position = 'relative';
+  pop.style.left = (c * cellW + cellW  / 2 - 24) + 'px';
+  pop.style.top  = (r * cellH + cellH  / 2 - 12) + 'px';
+
   boardEl.appendChild(pop);
-  pop.addEventListener('animationend', () => pop.remove(), {once: true});
+  pop.addEventListener('animationend', () => pop.remove(), { once: true });
 }
 
-/* =====================================================
-   バウンスバック（無効スワップ）
-   ===================================================== */
+/* ============================================================
+   20. バウンスバック（無効スワップ）
+   ============================================================ */
+
+/**
+ * triggerBounce(el)
+ * タイルにバウンスアニメーションを付ける
+ */
 function triggerBounce(el) {
   if (!el) return;
-  el.classList.remove('bounce-back');
-  void el.offsetWidth;
-  el.classList.add('bounce-back');
-  el.addEventListener('animationend', () => el.classList.remove('bounce-back'), {once: true});
+  el.classList.remove('anim-bounce');
+  void el.offsetWidth; // reflow
+  el.classList.add('anim-bounce');
+  el.addEventListener(
+    'animationend',
+    () => el.classList.remove('anim-bounce'),
+    { once: true }
+  );
 }
 
-/* =====================================================
-   クリア
-   ===================================================== */
+/* ============================================================
+   21. クリア判定・モーダル
+   ============================================================ */
+
+/**
+ * checkWin()
+ * 目標スコア達成チェック
+ */
 function checkWin() {
-  if (score >= TARGET) setTimeout(showClear, 250);
+  if (score >= TARGET_SCORE) {
+    setTimeout(showClearModal, 280);
+  }
 }
-function showClear() {
-  modalScore.textContent = score.toLocaleString();
-  overlay.classList.remove('hidden');
+
+/**
+ * showClearModal()
+ * クリアモーダルを表示する
+ */
+function showClearModal() {
+  modalScoreEl.textContent = score.toLocaleString();
+  overlayEl.classList.remove('is-hidden');
 }
-function hideOverlay() { overlay.classList.add('hidden'); }
 
-/* =====================================================
-   ユーティリティ
-   ===================================================== */
-const wait     = ms => new Promise(r => setTimeout(r, ms));
-const parseKey = key => key.split(',').map(Number);
+function hideModal() {
+  overlayEl.classList.add('is-hidden');
+}
 
-/* =====================================================
-   ボタン
-   ===================================================== */
-document.getElementById('btn-restart').addEventListener('click', () => {
+/* ============================================================
+   22. ユーティリティ
+   ============================================================ */
+
+/** wait(ms) — Promise ラップの setTimeout */
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** parseKey("r,c") → [r, c] */
+const parseKey = (key) => key.split(',').map(Number);
+
+/** isNormalType(type) — 通常ピース番号かどうか */
+function isNormalType(type) {
+  return typeof type === 'number';
+}
+
+/** isAdjacent(r1,c1,r2,c2) — 上下左右に隣接しているか */
+function isAdjacent(r1, c1, r2, c2) {
+  return Math.abs(r1 - r2) + Math.abs(c1 - c2) === 1;
+}
+
+/** isInBounds(r,c) — 盤面内かどうか */
+function isInBounds(r, c) {
+  return r >= 0 && r < ROWS && c >= 0 && c < COLS;
+}
+
+/* ============================================================
+   23. ボタンイベント
+   ============================================================ */
+
+document.getElementById('js-btn-restart').addEventListener('click', () => {
   if (busy) return;
-  init();
-});
-document.getElementById('btn-again').addEventListener('click', () => init());
-document.getElementById('btn-stages').addEventListener('click', () => {
-  alert('ステージ一覧は準備中です！\n現在は北海道ステージのみ実装されています。');
+  initGame();
 });
 
-/* =====================================================
-   起動
-   ===================================================== */
-init();
+document.getElementById('js-btn-again').addEventListener('click', () => {
+  initGame();
+});
+
+document.getElementById('js-btn-stages').addEventListener('click', () => {
+  // 将来的に47都道府県ステージ選択へ遷移
+  alert('ステージ一覧は準備中です！\n現在は北海道ステージのみプレイ可能です。');
+});
+
+/* ============================================================
+   24. 起動
+   ============================================================ */
+initGame();
