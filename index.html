@@ -8,72 +8,86 @@
 </head>
 <body>
 
-  <!-- 背景装飾スノーフレーク -->
+  <!-- ========== 背景演出 ========== -->
   <div class="bg-deco" aria-hidden="true">
-    <span class="snowflake s1">❄</span>
-    <span class="snowflake s2">❄</span>
-    <span class="snowflake s3">❄</span>
-    <span class="snowflake s4">❄</span>
-    <span class="snowflake s5">❄</span>
-    <span class="snowflake s6">❄</span>
+    <span class="flake f1">❄</span>
+    <span class="flake f2">❄</span>
+    <span class="flake f3">❄</span>
+    <span class="flake f4">❄</span>
+    <span class="flake f5">❄</span>
+    <span class="flake f6">❄</span>
   </div>
 
-  <div class="app-shell">
+  <!-- ========== アプリ本体 ========== -->
+  <div class="shell">
 
     <!-- ヘッダー -->
     <header class="hdr">
-      <div class="hdr-left">
-        <span class="hdr-num">STAGE 01</span>
+      <div class="hdr-title">
+        <p class="hdr-stage">STAGE 01</p>
         <h1 class="hdr-name">北海道</h1>
       </div>
-      <div class="hdr-right">
-        <div class="score-pill">
-          <span class="score-pill-lbl">スコア</span>
-          <span class="score-pill-val" id="score-display">0</span>
+      <div class="hdr-scores">
+        <div class="score-chip">
+          <span class="chip-label">スコア</span>
+          <span class="chip-value" id="js-score">0</span>
         </div>
-        <div class="score-pill accent">
-          <span class="score-pill-lbl">目標</span>
-          <span class="score-pill-val" id="target-display">2000</span>
+        <div class="score-chip is-target">
+          <span class="chip-label">目標</span>
+          <span class="chip-value" id="js-target">2000</span>
         </div>
       </div>
     </header>
 
     <!-- 進捗バー -->
-    <div class="prog-wrap">
+    <div class="prog-row">
       <div class="prog-track">
-        <div class="prog-fill" id="prog-fill" style="width:0%"></div>
+        <div class="prog-bar" id="js-prog-bar"></div>
       </div>
-      <span class="prog-pct" id="prog-pct">0 / 2000</span>
+      <span class="prog-label" id="js-prog-label">0 / 2000</span>
     </div>
 
-    <!-- フラッシュメッセージ -->
-    <div class="flash" id="flash" aria-live="polite"></div>
+    <!-- コンボ & フラッシュ -->
+    <div class="feedback-row">
+      <div class="combo" id="js-combo" aria-live="polite"></div>
+      <div class="flash" id="js-flash" aria-live="polite"></div>
+    </div>
 
     <!-- 盤面 -->
     <main class="board-wrap">
-      <div class="board" id="board"></div>
+      <canvas class="ripple-canvas" id="js-ripple" aria-hidden="true"></canvas>
+      <div class="board" id="js-board" role="grid" aria-label="パズル盤面"></div>
     </main>
+
+    <!-- 特殊ピース説明 -->
+    <div class="hint-row">
+      <span class="hint-item">💣 4個→爆弾（周囲8マス消去）</span>
+      <span class="hint-sep">｜</span>
+      <span class="hint-item">🌈 5個→虹（同種全消し）</span>
+    </div>
 
     <!-- フッター -->
     <footer class="ftr">
-      <button class="btn ghost" id="btn-stages">📋 ステージ一覧</button>
-      <button class="btn primary" id="btn-restart">🔄 リスタート</button>
+      <button class="btn btn-ghost" id="js-btn-stages" type="button">📋 ステージ</button>
+      <button class="btn btn-primary" id="js-btn-restart" type="button">🔄 リスタート</button>
     </footer>
 
-  </div>
+  </div><!-- /.shell -->
 
-  <!-- クリアモーダル -->
-  <div class="overlay hidden" id="overlay">
+  <!-- ========== クリアモーダル ========== -->
+  <div class="overlay is-hidden" id="js-overlay" role="dialog" aria-modal="true">
     <div class="modal">
-      <div class="modal-burst">🎉</div>
+      <p class="modal-emoji">🎊</p>
       <h2 class="modal-title">北海道 クリア！</h2>
       <p class="modal-sub">おめでとうございます！</p>
-      <div class="modal-score-box">
-        <span class="modal-score-lbl">最終スコア</span>
-        <span class="modal-score-val" id="modal-score">0</span>
+      <div class="modal-score-wrap">
+        <span class="modal-score-label">最終スコア</span>
+        <span class="modal-score-value" id="js-modal-score">0</span>
       </div>
-      <div class="modal-icons">❄️ 🦀 🐄 🧀 🌽 🦊</div>
-      <button class="btn primary wide" id="btn-again">もう一度プレイ 🔄</button>
+      <p class="modal-pieces">❄️ 🦀 🐄 🧀 🌽 🦊</p>
+      <button class="btn btn-primary btn-wide" id="js-btn-again" type="button">
+        もう一度 🔄
+      </button>
     </div>
   </div>
 
